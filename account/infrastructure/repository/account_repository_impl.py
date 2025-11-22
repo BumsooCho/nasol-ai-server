@@ -28,6 +28,7 @@ class AccountRepositoryImpl(AccountRepositoryPort):
 
     async def save(self, account: Account) -> Account:
         orm_account = AccountORM(
+            session_id=account.session_id,
             oauth_id=account.oauth_id,
             oauth_type=account.oauth_type,
             nickname=account.nickname,

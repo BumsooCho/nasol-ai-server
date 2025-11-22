@@ -49,7 +49,7 @@ async def process_google_redirect(
     print("[DEBUG] Generated session_id:", session_id)
 
     # code -> access token
-    access_token = await usecase.login_and_fetch_user(state or "", code)
+    access_token = await usecase.login_and_fetch_user(state or "", code, session_id)
     r = httpx.get("https://oauth2.googleapis.com/tokeninfo", params={"access_token": access_token.access_token})
     print(r.status_code, r.text)
 
