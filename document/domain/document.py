@@ -25,14 +25,13 @@ from datetime import datetime, timedelta
         - 의료비, 교육비, 기부금 등
 '''
 ## 위 형태별에 따라 domain을 만드는 것은 redis에만 저장되는 app 특성 상 낭비가 될 가능성이 높다.
-##id는 해당 row의 id
-## user_id는 로그인을 했다면 oauth_id, 로그인하지 않았다면 redis에 저장되어있는 session_id가 된다.
+## session_id redis에 저장되어있는 session_id
 ## file_key는 대상 항목 (Ex; 원천징수증_근무처명, 원천징수영수증_급여, 영수증_거래처, 영수증_금액 등등)
-## file_value는 대상 항목의 수치 (Ex; 코드랩주식회사, 100000000, GS_강남점, 25000 등등)
-## period는 data가 저장된 후 24시간으로 한다.
+## file_value는 대상 항목의 수치 (Ex; 코드랩주식회사, 100000000, GS_강남점, 25000 등등)로 관리한다.
+## 추후 시간이 남으면 key 값은 코드화
 
 class Document:
-    def __init__(self, user_id:str, file_key:str, file_value:str):
-        self.user_id = user_id
+    def __init__(self, session_id:str, file_key:str, file_value:str):
+        self.session_id = session_id
         self.file_key = file_key
         self.file_value = file_value

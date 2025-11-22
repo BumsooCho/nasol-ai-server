@@ -17,6 +17,6 @@ class DocumentUseCase:
             cls.__instance = cls()
         return cls.__instance
 
-    def register_document(self, user_id:str, file_key: str, file_value: str) -> Document:
-        doc = Document(user_id, file_key, file_value)
+    def register_document(self, session_id:str, file_key: str, file_value: str) -> Document:
+        doc = Document(session_id, file_key, file_value)
         return self.document_repo.save(doc)

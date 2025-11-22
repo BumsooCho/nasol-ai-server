@@ -19,7 +19,7 @@ class DocumentRepositoryImpl(DocumentRepositoryPort):
 
     def save(self, document: Document) -> Document:
 
-        key = document.user_id
+        key = document.session_id
         # Hash 구조로 계속 누적 저장
         redis_client.hset(
             key,
