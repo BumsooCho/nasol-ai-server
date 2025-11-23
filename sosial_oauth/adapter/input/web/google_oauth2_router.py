@@ -20,7 +20,7 @@ async def redirect_to_google():
     print("[DEBUG] Redirecting to Google:", url)
     return RedirectResponse(url)
 
-@authentication_router.get("/google/logout")
+@authentication_router.post("/logout")
 async def logout_to_google(request: Request, session_id: str | None = Cookie(None)):
     print("[DEBUG] Logout called")
 
