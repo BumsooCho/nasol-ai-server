@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime, Enum as SAEnum
+from sqlalchemy import Column, String, DateTime, Enum as SAEnum, Integer
 from enum import Enum as PyEnum
 from datetime import datetime
 
@@ -28,6 +28,8 @@ class AccountORM(Base):
     active_status = Column(SAEnum(YN, native_enum=True), nullable=False, default=YN.Y)
 
     role_id = Column(String(255), nullable=True)    ## TODO 권한 관련 추가 후 nullable=False 작업 필요
+
+    automatic_analysis_cycle = Column(Integer, nullable=True, default=0)
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

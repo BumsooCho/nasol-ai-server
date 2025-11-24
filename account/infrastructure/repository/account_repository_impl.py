@@ -37,7 +37,8 @@ class AccountRepositoryImpl(AccountRepositoryPort):
             email=account.email,
             phone_number=account.phone_number,
             active_status=account.active_status,
-            role_id=account.role_id
+            role_id=account.role_id,
+            automatic_analysis_cycle=account.automatic_analysis_cycle,
         )
 
         self.db.add(orm_account)
