@@ -64,7 +64,7 @@ async def process_google_redirect(
     redis_client.set(
         session_id,
         "USER_TOKEN",
-        access_token.access_token
+        access_token.access_token,
     )
     redis_client.expire(session_id, 24 * 60 * 60)
     print("[DEBUG] Session saved in Redis:", redis_client.exists(session_id))

@@ -14,7 +14,8 @@ def get_current_user(session_id: str = Cookie(None)) -> str:
         redis_client.hset(
             session_id,
             "USER_TOKEN",
-            "GUEST")
+            "GUEST"
+        )
         redis_client.expire(session_id, 24 * 60 * 60)
         return session_id
 

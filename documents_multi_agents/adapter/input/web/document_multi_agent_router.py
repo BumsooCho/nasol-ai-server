@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, UploadFile, HTTPException
+from fastapi import APIRouter, Depends, UploadFile, HTTPException, Form
 from openai import OpenAI
 from pypdf import PdfReader
 import asyncio
@@ -84,7 +84,7 @@ async def qa_on_document(summary: str, question: str) -> str:
 # API 엔드포인트
 # -----------------------
 @documents_multi_agents_router.post("/analyze")
-async def analyze_document(file: UploadFile, session_id: str = Depends(get_current_user)):
+async def analyze_document(file: UploadFile, type_of_doc: str = Form(...), session_id: str = Depends(get_current_user)):
     try:
         content = await file.read()
         if not content:
@@ -107,9 +107,11 @@ async def analyze_document(file: UploadFile, session_id: str = Depends(get_curre
                 # 쉼표 제거하고 Redis에 저장
                 print ("[DEBUG] file.strip() : ", field.strip())
                 print ("[DEBUG] value.strip() : ", value.replace(",", "").strip())
+                print(f"{type_of_doc}:{field.strip()}")
+                print("[DEBUG] session_Id : ", session_id)
                 redis_client.hset(
                     session_id,
-                    field.strip(),
+                    f"{type_of_doc}:{field.strip()}",
                     value.replace(",", "").strip()
                 )
         except Exception as e:
