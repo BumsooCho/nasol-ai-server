@@ -2,7 +2,6 @@ import os
 from urllib.parse import urlencode, quote
 
 import requests
-from requests.exceptions import RequestException, Timeout, ConnectionError as RequestsConnectionError
 
 from sosial_oauth.adapter.input.web.request.get_access_token_request import GetAccessTokenRequest
 from sosial_oauth.adapter.input.web.response.access_token import AccessToken
