@@ -135,8 +135,22 @@ async def tax_on_document(document: str, question: str) -> str:
 # API 엔드포인트
 # -----------------------
 @documents_multi_agents_router.post("/analyze")
-async def analyze_document(file: UploadFile, type_of_doc: str = Form(...), session_id: str = Depends(get_current_user)):
+async def analyze_document(
+    response: Response,
+    file: UploadFile, 
+    type_of_doc: str = Form(...), 
+    session_id: str = Depends(get_current_user)
+):
     try:
+        # 쿠키에 session_id 명시적으로 설정
+        response.set_cookie(
+            key="session_id",
+            value=session_id,
+            max_age=24 * 60 * 60,
+            httponly=True,
+            samesite="lax"
+        )
+        
         content = await file.read()
         if not content:
             raise HTTPException(400, "Empty file upload")
@@ -166,18 +180,32 @@ async def analyze_document(file: UploadFile, type_of_doc: str = Form(...), sessi
                 field_clean = field.strip()
                 value_clean = value.replace(",", "").strip()
                 
+                # 암호화된 키/값 생성
+                encrypted_key = crypto.enc_data(f"{type_of_doc}:{field_clean}")
+                encrypted_value = crypto.enc_data(value_clean)
+                
+                print(f"[DEBUG] Saving to Redis - session_id: {session_id}")
+                print(f"[DEBUG] Original key: {type_of_doc}:{field_clean}")
+                print(f"[DEBUG] Original value: {value_clean}")
+                
                 # Redis에 저장
                 redis_client.hset(
                     session_id,
-                    crypto.enc_data(f"{type_of_doc}:{field_clean}"),
-                    crypto.enc_data(value_clean)
+                    encrypted_key,
+                    encrypted_value
                 )
+                
+                # 저장 확인
+                saved_value = redis_client.hget(session_id, encrypted_key)
+                print(f"[DEBUG] Saved successfully: {saved_value is not None}")
                 
                 # 응답용 데이터 수집
                 extracted_items[field_clean] = value_clean
                 
         except Exception as e:
             print("[ERROR] Failed to save to Redis:", str(e))
+            import traceback
+            traceback.print_exc()
             
         redis_client.expire(session_id, 24 * 60 * 60)
 
@@ -196,10 +224,11 @@ async def analyze_document(file: UploadFile, type_of_doc: str = Form(...), sessi
             # 타입을 모를 경우 원본 데이터만 반환
             categorized_data = {"raw_items": extracted_items}
         
-        # 성공 응답 반환
+        # 성공 응답 반환 (session_id 포함)
         return {
             "success": True,
             "message": "분석 완료",
+            "session_id": session_id,  # 프론트엔드에서 사용할 수 있도록 명시적으로 반환
             "document_type": type_of_doc,
             "extracted_count": len(extracted_items),
             "categorized_data": categorized_data
@@ -340,12 +369,22 @@ async def analyze_document(session_id: str = Depends(get_current_user)):
 # -----------------------
 @documents_multi_agents_router.post("/analyze_form")
 async def insert_document(
+        response: Response,
         request: InsertDocumentRequest,
         session_id: str = Depends(get_current_user)
 ):
     session_expire_seconds = 24 * 60 * 60
 
     try:
+        # 쿠키에 session_id 명시적으로 설정
+        response.set_cookie(
+            key="session_id",
+            value=session_id,
+            max_age=24 * 60 * 60,
+            httponly=True,
+            samesite="lax"
+        )
+        
         # 세션 처리
         if not session_id:
             session_id = str(uuid.uuid4())
@@ -357,11 +396,23 @@ async def insert_document(
         for field_key, field_value in request.data.items():
             value_clean = field_value.replace(",", "").strip()
             
+            # 암호화된 키/값 생성
+            encrypted_key = crypto.enc_data(f"{request.document_type}:{field_key}")
+            encrypted_value = crypto.enc_data(value_clean)
+            
+            print(f"[DEBUG] Saving to Redis (form) - session_id: {session_id}")
+            print(f"[DEBUG] Original key: {request.document_type}:{field_key}")
+            print(f"[DEBUG] Original value: {value_clean}")
+            
             redis_client.hset(
                 session_id,
-                crypto.enc_data(f"{request.document_type}:{field_key}"),
-                crypto.enc_data(value_clean)
+                encrypted_key,
+                encrypted_value
             )
+            
+            # 저장 확인
+            saved_value = redis_client.hget(session_id, encrypted_key)
+            print(f"[DEBUG] Saved successfully: {saved_value is not None}")
             
             # 응답용 데이터 수집
             extracted_items[field_key] = value_clean
@@ -395,6 +446,68 @@ async def insert_document(
         raise HTTPException(status_code=500, detail=str(e))
 
 # -----------------------
+# 디버그: Redis 데이터 확인
+# -----------------------
+@documents_multi_agents_router.get("/debug/redis-data")
+async def debug_redis_data(session_id: str = Depends(get_current_user)):
+    """Redis에 저장된 원본 데이터 확인 (디버깅용)"""
+    try:
+        raw_data = redis_client.hgetall(session_id)
+        
+        result = {
+            "session_id": session_id,
+            "total_keys": len(raw_data),
+            "keys": []
+        }
+        
+        for key_bytes, value_bytes in raw_data.items():
+            try:
+                # bytes를 문자열로 변환
+                if isinstance(key_bytes, bytes):
+                    key_str = key_bytes.decode('utf-8')
+                else:
+                    key_str = str(key_bytes)
+                
+                if isinstance(value_bytes, bytes):
+                    value_str = value_bytes.decode('utf-8')
+                else:
+                    value_str = str(value_bytes)
+                
+                # USER_TOKEN은 암호화되지 않음
+                if key_str == "USER_TOKEN":
+                    result["keys"].append({
+                        "key": key_str,
+                        "value": "[REDACTED]",  # 보안을 위해 숨김
+                        "encrypted": False
+                    })
+                else:
+                    # 복호화 시도
+                    try:
+                        decrypted_key = crypto.dec_data(key_str)
+                        decrypted_value = crypto.dec_data(value_str)
+                        result["keys"].append({
+                            "key_encrypted": key_str[:50] + "...",
+                            "key_decrypted": decrypted_key,
+                            "value_decrypted": decrypted_value,
+                            "encrypted": True
+                        })
+                    except Exception as decrypt_err:
+                        result["keys"].append({
+                            "key": key_str[:50] + "...",
+                            "value": value_str[:50] + "...",
+                            "error": f"복호화 실패: {str(decrypt_err)}",
+                            "encrypted": False
+                        })
+            except Exception as e:
+                result["keys"].append({
+                    "error": f"키 처리 실패: {str(e)}"
+                })
+        
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# -----------------------
 # 통합 결과 조회 (소득 + 지출)
 # -----------------------
 @documents_multi_agents_router.get("/result")
@@ -404,8 +517,12 @@ async def get_combined_result(session_id: str = Depends(get_current_user)):
     시각화에 적합한 형태로 데이터 구조화
     """
     try:
+        print(f"[DEBUG] /result called with session_id: {session_id}")
+        
         # Redis에서 모든 데이터 가져오기
         encrypted_data = redis_client.hgetall(session_id)
+        
+        print(f"[DEBUG] Total keys in Redis: {len(encrypted_data)}")
         
         if not encrypted_data:
             raise HTTPException(
@@ -419,12 +536,27 @@ async def get_combined_result(session_id: str = Depends(get_current_user)):
         
         for key_bytes, value_bytes in encrypted_data.items():
             try:
+                # bytes를 문자열로 변환
+                if isinstance(key_bytes, bytes):
+                    key_str = key_bytes.decode('utf-8')
+                else:
+                    key_str = str(key_bytes)
+                
+                if isinstance(value_bytes, bytes):
+                    value_str = value_bytes.decode('utf-8')
+                else:
+                    value_str = str(value_bytes)
+                
                 # USER_TOKEN 제외
-                if key_bytes == "USER_TOKEN" or key_bytes == b"USER_TOKEN":
+                if key_str == "USER_TOKEN":
+                    print("[DEBUG] Skipping USER_TOKEN")
                     continue
                 
-                key_plain = crypto.dec_data(key_bytes)
-                value_plain = crypto.dec_data(value_bytes)
+                print(f"[DEBUG] Decrypting key: {key_str[:50]}...")
+                key_plain = crypto.dec_data(key_str)
+                value_plain = crypto.dec_data(value_str)
+                
+                print(f"[DEBUG] Decrypted: {key_plain} = {value_plain}")
                 
                 # "타입:필드명" 형태 파싱
                 if ":" in key_plain:
@@ -432,12 +564,19 @@ async def get_combined_result(session_id: str = Depends(get_current_user)):
                     
                     if "소득" in doc_type or "income" in doc_type.lower():
                         income_items[field_name] = value_plain
+                        print(f"[DEBUG] Added to income: {field_name} = {value_plain}")
                     elif "지출" in doc_type or "expense" in doc_type.lower():
                         expense_items[field_name] = value_plain
-                        
-            except Exception as e:
-                print(f"[WARNING] 복호화 실패: {key_bytes}, error: {str(e)}")
+                        print(f"[DEBUG] Added to expense: {field_name} = {value_plain}")
+            except Exception as decrypt_error:
+                print(f"[ERROR] Decryption failed for key: {key_str[:50] if 'key_str' in locals() else 'unknown'}")
+                print(f"[ERROR] Error: {str(decrypt_error)}")
+                import traceback
+                traceback.print_exc()
                 continue
+        
+        print(f"[DEBUG] Total income items: {len(income_items)}")
+        print(f"[DEBUG] Total expense items: {len(expense_items)}")
         
         # AI로 카테고리 분류
         from documents_multi_agents.domain.service.financial_analyzer_service import FinancialAnalyzerService
@@ -447,14 +586,14 @@ async def get_combined_result(session_id: str = Depends(get_current_user)):
         income_categorized = analyzer._categorize_income(income_items) if income_items else {}
         expense_categorized = analyzer._categorize_expense(expense_items) if expense_items else {}
         
-        # 요약 정보 계산 (안전한 타입 변환)
+        # 요약 정보 계산 (안전한 타입 변환) - 한글 키 우선, 없으면 영문 키
         try:
-            total_income = int(income_categorized.get("total_income", 0)) if income_categorized.get("total_income") else 0
+            total_income = int(income_categorized.get("총소득") or income_categorized.get("total_income", 0)) if (income_categorized.get("총소득") or income_categorized.get("total_income")) else 0
         except (ValueError, TypeError):
             total_income = 0
             
         try:
-            total_expense = int(expense_categorized.get("total_expense", 0)) if expense_categorized.get("total_expense") else 0
+            total_expense = int(expense_categorized.get("총지출") or expense_categorized.get("total_expense", 0)) if (expense_categorized.get("총지출") or expense_categorized.get("total_expense")) else 0
         except (ValueError, TypeError):
             total_expense = 0
         
@@ -474,8 +613,8 @@ async def get_combined_result(session_id: str = Depends(get_current_user)):
             "income": income_categorized,
             "expense": expense_categorized,
             "chart_data": {
-                "income_by_category": income_categorized.get("total_by_category", {}),
-                "expense_by_main_category": expense_categorized.get("total_by_main_category", {}),
+                "income_by_category": income_categorized.get("카테고리별 합계") or income_categorized.get("카테고리별합계") or income_categorized.get("total_by_category", {}),
+                "expense_by_main_category": expense_categorized.get("카테고리별 합계") or expense_categorized.get("카테고리별합계") or expense_categorized.get("total_by_main_category", {}),
                 "expense_detail": expense_categorized
             }
         }

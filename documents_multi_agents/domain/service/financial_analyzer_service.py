@@ -1,5 +1,6 @@
 import os
 import json
+import re
 from typing import Dict, List, Any
 from openai import OpenAI
 from dotenv import load_dotenv
@@ -14,6 +15,44 @@ class FinancialAnalyzerService:
     
     def __init__(self):
         self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    
+    @staticmethod
+    def _fix_json_string(json_str: str) -> str:
+        """
+        잘못된 JSON 문자열을 수정
+        """
+        # 1. 마지막 항목의 쉼표 제거
+        json_str = re.sub(r',\s*}', '}', json_str)
+        json_str = re.sub(r',\s*]', ']', json_str)
+        
+        # 2. 연속된 쉼표 제거
+        json_str = re.sub(r',\s*,', ',', json_str)
+        
+        # 3. 콜론 뒤에 쉼표가 바로 오는 경우 수정
+        json_str = re.sub(r':\s*,', ': null,', json_str)
+        
+        return json_str
+    
+    @staticmethod
+    def _clean_item_names(data: Dict) -> Dict:
+        """
+        항목명의 언더스코어를 띄어쓰기로 변환하고 데이터 정리
+        """
+        if not isinstance(data, dict):
+            return data
+        
+        cleaned = {}
+        for key, value in data.items():
+            # 키의 언더스코어를 띄어쓰기로 변환
+            clean_key = key.replace("_", " ")
+            
+            if isinstance(value, dict):
+                # 중첩된 딕셔너리도 재귀적으로 처리
+                cleaned[clean_key] = FinancialAnalyzerService._clean_item_names(value)
+            else:
+                cleaned[clean_key] = value
+        
+        return cleaned
         
     def categorize_financial_data(self, decrypted_data: Dict[str, str]) -> Dict[str, Any]:
         """
@@ -62,28 +101,58 @@ class FinancialAnalyzerService:
             return {}
             
         prompt = f"""
-다음 소득 항목들을 분석하여 아래 카테고리로 분류해줘:
+다음 소득 항목들을 분석하여 아래 카테고리로 정확하게 분류해줘:
 
 소득 항목:
 {json.dumps(income_items, ensure_ascii=False, indent=2)}
 
-분류 카테고리:
-1. 고정소득 (fixed_income): 매월 일정하게 들어오는 소득 (급여, 월급, 연봉 등)
-2. 변동소득 (variable_income): 불규칙적으로 들어오는 소득 (상여, 보너스, 성과급 등)
-3. 기타소득 (other_income): 부수입, 이자소득, 배당소득 등
+**엄격한 분류 기준:**
 
-반드시 다음 JSON 형식으로만 답변해:
+1. 고정소득: 매월 일정하게 들어오는 소득
+   - 급여, 월급, 연봉
+   - 식대 (고정)
+   - 정기 수당
+
+2. 변동소득: 불규칙적으로 들어오는 소득
+   - 상여금, 보너스, 성과급
+   - 수당 (변동)
+   - 야근수당, 연장근로수당
+
+3. 기타소득: 부가 수입
+   - 이자소득, 배당소득
+   - 임대소득
+   - 프리랜서 수입
+
+**절대 규칙:**
+1. 항목명의 언더스코어(_)를 띄어쓰기로 변경
+2. 원본 금액을 그대로 사용 (숫자 타입)
+3. 빈 객체 절대 사용 금지
+4. JSON 문법 엄수: 마지막 항목 뒤에 쉼표 없음, 모든 괄호 정확히 닫기
+
+**응답 형식 (반드시 이 형식을 정확히 따를 것):**
+
+```json
 {{
-  "fixed_income": {{"항목명": "금액"}},
-  "variable_income": {{"항목명": "금액"}},
-  "other_income": {{"항목명": "금액"}},
-  "total_by_category": {{
-    "fixed": 총액,
-    "variable": 총액,
-    "other": 총액
+  "고정소득": {{
+    "급여": 3000000,
+    "식대": 200000
   }},
-  "total_income": 전체총액
+  "변동소득": {{
+    "상여": 1000000
+  }},
+  "기타소득": {{
+    "이자": 50000
+  }},
+  "카테고리별 합계": {{
+    "고정소득": 3200000,
+    "변동소득": 1000000,
+    "기타소득": 50000
+  }},
+  "총소득": 4250000
 }}
+```
+
+중요: 위 형식을 정확히 따라야 합니다. JSON 코드블록(```)은 제외하고 순수 JSON만 반환하세요.
 """
         
         try:
@@ -91,20 +160,60 @@ class FinancialAnalyzerService:
                 model="gpt-4o-mini",
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=1500,
-                temperature=0
+                temperature=0,
+                seed=12345
             )
             
             result_text = response.choices[0].message.content.strip()
-            # JSON 추출 (마크다운 코드블록 제거)
+            print(f"[DEBUG] AI Response (income): {result_text[:500]}")  # 처음 500자만 로그
+            
+            # JSON 추출
             if "```json" in result_text:
                 result_text = result_text.split("```json")[1].split("```")[0].strip()
             elif "```" in result_text:
                 result_text = result_text.split("```")[1].split("```")[0].strip()
-                
-            return json.loads(result_text)
+            
+            # JSON 수정 (잘못된 문법 자동 수정)
+            result_text = self._fix_json_string(result_text)
+            print(f"[DEBUG] Fixed JSON: {result_text[:500]}")
+            
+            # JSON 파싱 시도
+            try:
+                result = json.loads(result_text)
+                # 언더스코어를 띄어쓰기로 변환
+                return self._clean_item_names(result)
+            except json.JSONDecodeError as json_err:
+                print(f"[ERROR] JSON parsing failed: {json_err}")
+                print(f"[ERROR] Raw response text: {result_text}")
+                # JSON 파싱 실패 시 원본 데이터 반환
+                return {
+                    "error": f"AI 응답을 파싱할 수 없습니다: {str(json_err)}",
+                    "raw_items": income_items,
+                    "고정소득": {},
+                    "변동소득": {},
+                    "기타소득": {},
+                    "카테고리별 합계": {
+                        "고정소득": 0,
+                        "변동소득": 0,
+                        "기타소득": 0
+                    },
+                    "총소득": sum(int(v) for v in income_items.values() if v.isdigit())
+                }
         except Exception as e:
             print(f"[ERROR] Income categorization failed: {str(e)}")
-            return {"error": str(e), "raw_items": income_items}
+            return {
+                "error": str(e),
+                "raw_items": income_items,
+                "고정소득": {},
+                "변동소득": {},
+                "기타소득": {},
+                "카테고리별 합계": {
+                    "고정소득": 0,
+                    "변동소득": 0,
+                    "기타소득": 0
+                },
+                "총소득": sum(int(v) for v in income_items.values() if v.isdigit())
+            }
 
     def _categorize_expense(self, expense_items: Dict[str, str]) -> Dict[str, Any]:
         """지출을 카테고리별로 분류"""
@@ -112,63 +221,79 @@ class FinancialAnalyzerService:
             return {}
             
         prompt = f"""
-다음 지출 항목들을 분석하여 아래 카테고리로 분류해줘:
+다음 지출 항목들을 분석하여 아래 카테고리로 정확하게 분류해줘:
 
 지출 항목:
 {json.dumps(expense_items, ensure_ascii=False, indent=2)}
 
-분류 카테고리:
-1. 필수지출 (essential):
-   - 주거비 (housing): 월세, 관리비, 주택대출 등
-   - 식비 (food): 식료품, 외식비 등
-   - 교통비 (transportation): 대중교통, 차량유지비, 주유비 등
-   - 통신비 (communication): 휴대폰, 인터넷 등
-   - 보험료 (insurance): 건강보험, 자동차보험 등
+**엄격한 분류 기준:**
 
-2. 선택지출 (discretionary):
-   - 문화생활 (culture): 영화, 공연, 취미 등
-   - 쇼핑 (shopping): 의류, 잡화 등
-   - 여행 (travel): 국내외 여행 경비
-   - 미용 (beauty): 미용실, 화장품 등
-   - 교육 (education): 학원, 도서, 강의 등
+1. 고정지출 (매달 일정하게 나가는 고정 금액):
+   - 월세, 관리비, 주택담보대출
+   - 통신비 (휴대폰, 인터넷, TV)
+   - 보험료 (건강보험, 자동차보험, 생명보험, 실손보험 등 모든 보험)
+   - 구독료 (넷플릭스, 멜론 등)
+   - 교통비 정기권
+   - 학원비, 등록금 (정기 납부)
+   
+2. 변동지출 (매달 금액이 달라지는 지출):
+   - 식비, 외식비, 배달음식
+   - 쇼핑 (의류, 잡화, 화장품)
+   - 문화생활 (영화, 공연, 취미)
+   - 교통비 (택시, 주유비, 대중교통)
+   - 의료비
+   - 카드 사용액 (전통시장, 일반 카드 사용)
+   
+3. 저축 및 투자:
+   - 적금, 예금, 청약저축
+   - 주식, 펀드, 채권
+   - 연금저축
+   - 대출 원금 상환
+   
+4. 기타 및 예비비 (일회성 또는 분류 애매한 지출):
+   - 병원비 (큰 치료비)
+   - 경조사비
+   - 선물비
+   - 수리비
+   - 일회성 지출
 
-3. 금융지출 (financial):
-   - 저축 (savings): 적금, 예금 등
-   - 투자 (investment): 주식, 펀드, 부동산 등
-   - 대출상환 (loan_repayment): 각종 대출 원리금 상환
+**절대 규칙:**
+1. 모든 보험료는 반드시 "고정지출"에 포함
+2. 카드 사용액은 "변동지출"에 포함
+3. 항목명의 언더스코어(_)를 띄어쓰기로 변경
+4. 원본 금액을 그대로 사용 (숫자 타입)
+5. 빈 객체 절대 사용 금지
+6. JSON 문법 엄수: 마지막 항목 뒤에 쉼표 없음, 모든 괄호 정확히 닫기
 
-4. 기타지출 (other): 위에 해당하지 않는 항목
+**응답 형식 (반드시 이 형식을 정확히 따를 것):**
 
-반드시 다음 JSON 형식으로만 답변해:
+```json
 {{
-  "essential": {{
-    "housing": {{"항목명": "금액"}},
-    "food": {{"항목명": "금액"}},
-    "transportation": {{"항목명": "금액"}},
-    "communication": {{"항목명": "금액"}},
-    "insurance": {{"항목명": "금액"}}
+  "고정지출": {{
+    "월세": 1000000,
+    "국민연금보험료 총합계": 675000
   }},
-  "discretionary": {{
-    "culture": {{"항목명": "금액"}},
-    "shopping": {{"항목명": "금액"}},
-    "travel": {{"항목명": "금액"}},
-    "beauty": {{"항목명": "금액"}},
-    "education": {{"항목명": "금액"}}
+  "변동지출": {{
+    "식비": 300000,
+    "카드 전통시장 합계": 120000
   }},
-  "financial": {{
-    "savings": {{"항목명": "금액"}},
-    "investment": {{"항목명": "금액"}},
-    "loan_repayment": {{"항목명": "금액"}}
+  "저축 및 투자": {{
+    "적금": 500000
   }},
-  "other": {{"항목명": "금액"}},
-  "total_by_main_category": {{
-    "essential": 총액,
-    "discretionary": 총액,
-    "financial": 총액,
-    "other": 총액
+  "기타 및 예비비": {{
+    "경조사비": 100000
   }},
-  "total_expense": 전체총액
+  "카테고리별 합계": {{
+    "고정지출": 1675000,
+    "변동지출": 420000,
+    "저축 및 투자": 500000,
+    "기타 및 예비비": 100000
+  }},
+  "총지출": 2695000
 }}
+```
+
+중요: 위 형식을 정확히 따라야 합니다. JSON 코드블록(```)은 제외하고 순수 JSON만 반환하세요.
 """
         
         try:
@@ -176,19 +301,64 @@ class FinancialAnalyzerService:
                 model="gpt-4o-mini",
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=2000,
-                temperature=0
+                temperature=0,
+                seed=12345
             )
             
             result_text = response.choices[0].message.content.strip()
+            print(f"[DEBUG] AI Response (expense): {result_text[:500]}")  # 처음 500자만 로그
+            
+            # JSON 추출
             if "```json" in result_text:
                 result_text = result_text.split("```json")[1].split("```")[0].strip()
             elif "```" in result_text:
                 result_text = result_text.split("```")[1].split("```")[0].strip()
-                
-            return json.loads(result_text)
+            
+            # JSON 수정 (잘못된 문법 자동 수정)
+            result_text = self._fix_json_string(result_text)
+            print(f"[DEBUG] Fixed JSON: {result_text[:500]}")
+            
+            # JSON 파싱 시도
+            try:
+                result = json.loads(result_text)
+                # 언더스코어를 띄어쓰기로 변환
+                return self._clean_item_names(result)
+            except json.JSONDecodeError as json_err:
+                print(f"[ERROR] JSON parsing failed: {json_err}")
+                print(f"[ERROR] Raw response text: {result_text}")
+                # JSON 파싱 실패 시 원본 데이터 반환
+                return {
+                    "error": f"AI 응답을 파싱할 수 없습니다: {str(json_err)}",
+                    "raw_items": expense_items,
+                    "고정지출": {},
+                    "변동지출": {},
+                    "저축 및 투자": {},
+                    "기타 및 예비비": {},
+                    "카테고리별 합계": {
+                        "고정지출": 0,
+                        "변동지출": 0,
+                        "저축 및 투자": 0,
+                        "기타 및 예비비": 0
+                    },
+                    "총지출": sum(int(v) for v in expense_items.values() if v.isdigit())
+                }
         except Exception as e:
             print(f"[ERROR] Expense categorization failed: {str(e)}")
-            return {"error": str(e), "raw_items": expense_items}
+            return {
+                "error": str(e),
+                "raw_items": expense_items,
+                "고정지출": {},
+                "변동지출": {},
+                "저축 및 투자": {},
+                "기타 및 예비비": {},
+                "카테고리별 합계": {
+                    "고정지출": 0,
+                    "변동지출": 0,
+                    "저축 및 투자": 0,
+                    "기타 및 예비비": 0
+                },
+                "총지출": sum(int(v) for v in expense_items.values() if v.isdigit())
+            }
 
     def _generate_recommendations(self, income_data: Dict, expense_data: Dict) -> Dict[str, Any]:
         """소득/지출 데이터를 기반으로 자산 분배 추천"""
@@ -273,7 +443,8 @@ class FinancialAnalyzerService:
                 model="gpt-4o-mini",
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=2500,
-                temperature=0.3
+                temperature=0,  # 일관성을 위해 0으로 변경
+                seed=12345  # 동일한 입력에 대해 일관된 결과 보장
             )
             
             result_text = response.choices[0].message.content.strip()
@@ -289,14 +460,14 @@ class FinancialAnalyzerService:
     
     def _generate_summary(self, income_data: Dict, expense_data: Dict) -> Dict[str, Any]:
         """전체 재무 상황 요약"""
-        # 안전한 타입 변환
+        # 안전한 타입 변환 - 한글 키 우선, 없으면 영문 키
         try:
-            total_income = int(income_data.get("total_income", 0)) if income_data.get("total_income") else 0
+            total_income = int(income_data.get("총소득") or income_data.get("total_income", 0)) if (income_data.get("총소득") or income_data.get("total_income")) else 0
         except (ValueError, TypeError):
             total_income = 0
             
         try:
-            total_expense = int(expense_data.get("total_expense", 0)) if expense_data.get("total_expense") else 0
+            total_expense = int(expense_data.get("총지출") or expense_data.get("total_expense", 0)) if (expense_data.get("총지출") or expense_data.get("total_expense")) else 0
         except (ValueError, TypeError):
             total_expense = 0
         
