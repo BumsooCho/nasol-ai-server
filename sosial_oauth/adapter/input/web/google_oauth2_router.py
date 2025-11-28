@@ -23,7 +23,7 @@ async def redirect_to_google():
     return RedirectResponse(url)
 
 @authentication_router.post("/logout")
-async def logout_to_google(request: Request, session_id: str | None = Cookie(None),, x_csrf_token: str | None = Header(None)):
+async def logout_to_google(request: Request, session_id: str | None = Cookie(None), x_csrf_token: str | None = Header(None)):
 
     logger.info("Logout called")
     logger.info("Request headers: %s", request.headers)
