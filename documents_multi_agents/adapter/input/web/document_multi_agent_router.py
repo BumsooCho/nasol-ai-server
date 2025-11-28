@@ -115,8 +115,7 @@ async def analyze_document(
         if not text:
             raise HTTPException(400, "No text extracted")
 
-        print(f"[DEBUG] Extracted text length: {len(text)}")
-        print(f"[DEBUG] Extracted text preview: {text[:300]}")  # 처음 300자
+        logger.info(f"Extracted text length: {len(text)}")
 
         # 2. QA (요약 기반)
         # type_of_doc에 따라 프롬프트 분기
@@ -168,20 +167,16 @@ async def analyze_document(
 
         answer = await qa_on_document(text, extraction_question, extraction_role)
 
-        print(f"[DEBUG] AI raw answer: {answer[:500]}")  # 처음 500자만
-
         # AI 응답 전처리: 마크다운, 설명문 제거
         answer = answer.replace("**", "")  # 볼드 제거
         answer = answer.replace("*", "")  # 이탤릭 제거
         answer = re.sub(r'※.*', '', answer)  # 주석 제거
         answer = re.sub(r'---.*', '', answer, flags=re.DOTALL)  # 구분선 이후 제거
 
-        print(f"[DEBUG] AI cleaned answer: {answer[:500]}")
-
         pattern = re.compile(r'([가-힣\w\s]+)\s*:\s*([\d,]+)')
         matches = list(pattern.finditer(answer))
 
-        print(f"[DEBUG] Pattern matches found: {len(matches)}")
+        logger.info(f"[DEBUG] Pattern matches found: {len(matches)}")
 
         # 추출된 항목들을 저장하고 동시에 수집
         extracted_items = {}
@@ -201,8 +196,7 @@ async def analyze_document(
                         if any(keyword in field_clean for keyword in duplicate_keywords) or \
                                 any(keyword in existing_field for keyword in duplicate_keywords):
                             is_duplicate = True
-                            print(
-                                f"[DEBUG] Skipping duplicate: {field_clean} (same as {existing_field}: {value_clean})")
+                            logger.info(f"[DEBUG] Duplicate found: {field_clean} ")
                             break
 
                 if is_duplicate:
@@ -239,10 +233,10 @@ async def analyze_document(
         invalidated_count = AICache.invalidate_user_cache(session_id)
         logger.info(f"Invalidated {invalidated_count} cache entries")
 
-        print(f"[DEBUG] Total extracted_items: {len(extracted_items)}")
+        logger.info(f"[DEBUG] Extracted items: {len(extracted_items)}")
 
         if not extracted_items:
-            print("[WARNING] No items were extracted from PDF!")
+            logger.warning("No items were extracted from PDF!")
             return {
                 "success": False,
                 "message": "PDF에서 데이터를 추출하지 못했습니다. PDF 형식을 확인해주세요.",
@@ -741,9 +735,8 @@ async def get_combined_result(session_id: str = Depends(get_current_user)):
                 traceback.print_exc()
                 continue
 
-        print(f"[DEBUG] Total income items: {len(income_items)}")
-        print(f"[DEBUG] Total expense items: {len(expense_items)}")
-
+        logger.debug(f"[DEBUG] Total income_items: {len(income_items)}")
+        logger.debug(f"[DEBUG] Total expense_items: {len(expense_items)}")
         # 소득 항목 중 지출성 항목을 지출로 재분류
         # 1. 보험료
         insurance_keywords = ["보험료", "보험", "연금"]
@@ -769,45 +762,34 @@ async def get_combined_result(session_id: str = Depends(get_current_user)):
 
             if should_move:
                 items_to_move.append(field_name)
-                print(f"[DEBUG] Moving to expense: {field_name} = {value}")
 
         # 실제 이동
         for field_name in items_to_move:
             expense_items[field_name] = income_items.pop(field_name)
 
-        print(f"[DEBUG] After reclassification - income: {len(income_items)}, expense: {len(expense_items)}")
+        logger.debug(f"[DEBUG] After reclassification - income: {len(income_items)}, expense: {len(expense_items)}")
 
         # AI로 카테고리 분류
         from documents_multi_agents.domain.service.financial_analyzer_service import FinancialAnalyzerService
 
         analyzer = FinancialAnalyzerService()
 
-        print(f"[DEBUG] Before AI categorization - income_items: {income_items}")
-        print(f"[DEBUG] Before AI categorization - expense_items: {expense_items}")
-
         income_categorized = analyzer._categorize_income(income_items) if income_items else {}
         expense_categorized = analyzer._categorize_expense(expense_items) if expense_items else {}
-
-        print(f"[DEBUG] After AI categorization - income_categorized keys: {income_categorized.keys()}")
-        print(f"[DEBUG] After AI categorization - expense_categorized keys: {expense_categorized.keys()}")
-        print(f"[DEBUG] income_categorized 총소득: {income_categorized.get('총소득')}")
-        print(f"[DEBUG] expense_categorized 총지출: {expense_categorized.get('총지출')}")
 
         # 요약 정보 계산 (안전한 타입 변환) - 한글 키 우선, 없으면 영문 키
         try:
             total_income = int(income_categorized.get("총소득") or income_categorized.get("total_income", 0)) if (
                         income_categorized.get("총소득") or income_categorized.get("total_income")) else 0
-            print(f"[DEBUG] Calculated total_income: {total_income}")
         except (ValueError, TypeError) as e:
-            print(f"[ERROR] Failed to calculate total_income: {e}")
+            logger.error(f"[ERROR] Failed to calculate total_income: {e}")
             total_income = 0
 
         try:
             total_expense = int(expense_categorized.get("총지출") or expense_categorized.get("total_expense", 0)) if (
                         expense_categorized.get("총지출") or expense_categorized.get("total_expense")) else 0
-            print(f"[DEBUG] Calculated total_expense: {total_expense}")
         except (ValueError, TypeError) as e:
-            print(f"[ERROR] Failed to calculate total_expense: {e}")
+            logger.error(f"[ERROR] Failed to calculate total_expense: {e}")
             total_expense = 0
 
         surplus = total_income - total_expense

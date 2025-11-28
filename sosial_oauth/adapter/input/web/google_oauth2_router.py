@@ -90,8 +90,7 @@ async def process_google_redirect(
 
     # CSRF 토큰 생성
     csrf_token = generate_csrf_token()
-    print("[DEBUG] csrf_token:", csrf_token)
-
+    logger.debug("CSRF token generated")
     # 브라우저 쿠키 발급
     response = RedirectResponse("http://localhost:3000")
     response.set_cookie(
