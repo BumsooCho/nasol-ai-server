@@ -13,6 +13,7 @@ from account.adapter.input.web.session_helper import get_current_user
 from documents_multi_agents.adapter.input.web.request.insert_income_request import InsertDocumentRequest
 from documents_multi_agents.domain.service.prompt_templates import PromptTemplates
 from util.log.log import Log
+from util.cache.ai_cache import AICache
 
 log_util = Log()
 logger = Log.get_logger()
@@ -222,6 +223,12 @@ async def analyze_document(
 
         redis_client.expire(session_id, 24 * 60 * 60)
         
+        # 🔥 새 문서 업로드 시 기존 캐시 무효화
+        # 사용자 데이터가 변경되었으므로 모든 AI 분석 캐시를 제거
+        logger.info(f"Invalidating cache for session: {session_id}")
+        invalidated_count = AICache.invalidate_user_cache(session_id)
+        logger.info(f"Invalidated {invalidated_count} cache entries")
+        
         print(f"[DEBUG] Total extracted_items: {len(extracted_items)}")
         
         if not extracted_items:
@@ -292,6 +299,14 @@ async def analyze_document(session_id: str = Depends(get_current_user)):
 
         data_str = ", ".join(pairs)
 
+        # 🔥 캐시 확인
+        cache_key = AICache.generate_cache_key(data_str, "future-assets")
+        cached_response = AICache.get_cached_response(cache_key)
+        
+        if cached_response:
+            return cached_response
+
+        # 캐시 미스 - GPT 호출
         question, role = PromptTemplates.get_future_assets_prompt()
         answer = await qa_on_document(data_str, question, role)
 
@@ -300,6 +315,9 @@ async def analyze_document(session_id: str = Depends(get_current_user)):
         answer = answer.replace("*", "")   # 이탤릭 제거
         answer = re.sub(r'※.*', '', answer)  # 주석 제거
         answer = re.sub(r'---.*', '', answer, flags=re.DOTALL)  # 구분선 이후 제거
+
+        # 🔥 캐시 저장 (24시간)
+        AICache.set_cached_response(cache_key, answer, ttl=86400)
 
         return answer
     except Exception as e:
@@ -334,6 +352,14 @@ async def analyze_document(session_id: str = Depends(get_current_user)):
 
         data_str = ", ".join(pairs)
 
+        # 🔥 캐시 확인
+        cache_key = AICache.generate_cache_key(data_str, "tax-credit")
+        cached_response = AICache.get_cached_response(cache_key)
+        
+        if cached_response:
+            return cached_response
+
+        # 캐시 미스 - GPT 호출
         question, role = PromptTemplates.get_tax_credit_prompt()
         answer = await qa_on_document(data_str, question, role)
 
@@ -342,6 +368,9 @@ async def analyze_document(session_id: str = Depends(get_current_user)):
         answer = answer.replace("*", "")   # 이탤릭 제거
         answer = re.sub(r'※.*', '', answer)  # 주석 제거
         answer = re.sub(r'---.*', '', answer, flags=re.DOTALL)  # 구분선 이후 제거
+
+        # 🔥 캐시 저장 (24시간)
+        AICache.set_cached_response(cache_key, answer, ttl=86400)
 
         return answer
     except Exception as e:
@@ -376,6 +405,14 @@ async def analyze_document(session_id: str = Depends(get_current_user)):
 
         data_str = ", ".join(pairs)
 
+        # 🔥 캐시 확인
+        cache_key = AICache.generate_cache_key(data_str, "deduction-expectation")
+        cached_response = AICache.get_cached_response(cache_key)
+        
+        if cached_response:
+            return cached_response
+
+        # 캐시 미스 - GPT 호출
         question, role = PromptTemplates.get_deduction_expectation_prompt()
         answer = await qa_on_document(data_str, question, role)
 
@@ -384,6 +421,9 @@ async def analyze_document(session_id: str = Depends(get_current_user)):
         answer = answer.replace("*", "")   # 이탤릭 제거
         answer = re.sub(r'※.*', '', answer)  # 주석 제거
         answer = re.sub(r'---.*', '', answer, flags=re.DOTALL)  # 구분선 이후 제거
+
+        # 🔥 캐시 저장 (24시간)
+        AICache.set_cached_response(cache_key, answer, ttl=86400)
 
         return answer
     except Exception as e:
@@ -901,5 +941,37 @@ async def tax_credit_checklist_markdown(session_id: str = Depends(get_current_us
 
         return answer
 
+    except Exception as e:
+        raise HTTPException(500, f"{type(e).__name__}: {str(e)}")
+
+
+# -----------------------
+# 캐시 관리 엔드포인트
+# -----------------------
+@documents_multi_agents_router.get("/cache/stats")
+@log_util.logging_decorator
+async def get_cache_stats(session_id: str = Depends(get_current_user)):
+    """캐시 통계 조회"""
+    try:
+        stats = AICache.get_cache_stats()
+        return {
+            "success": True,
+            "stats": stats
+        }
+    except Exception as e:
+        raise HTTPException(500, f"{type(e).__name__}: {str(e)}")
+
+
+@documents_multi_agents_router.delete("/cache/clear")
+@log_util.logging_decorator
+async def clear_user_cache(session_id: str = Depends(get_current_user)):
+    """사용자의 모든 캐시 삭제"""
+    try:
+        deleted_count = AICache.invalidate_user_cache(session_id)
+        return {
+            "success": True,
+            "message": f"{deleted_count}개의 캐시 항목이 삭제되었습니다.",
+            "deleted_count": deleted_count
+        }
     except Exception as e:
         raise HTTPException(500, f"{type(e).__name__}: {str(e)}")

@@ -7,6 +7,7 @@ from fastapi.responses import RedirectResponse, JSONResponse
 from config.redis_config import get_redis
 from sosial_oauth.application.usecase.google_oauth2_usecase import GoogleOAuth2UseCase
 from util.log.log import Log
+from util.cache.ai_cache import AICache
 
 # Singleton 방식으로 변경
 authentication_router = APIRouter()
@@ -36,6 +37,12 @@ async def logout_to_google(request: Request, session_id: str | None = Cookie(Non
     logger.debug("Redis has session_id?", exists)
 
     if exists:
+        # 🔥 사용자 세션 데이터 삭제 전에 캐시도 함께 삭제
+        logger.info(f"Invalidating cache for session: {session_id}")
+        invalidated_count = AICache.invalidate_user_cache(session_id)
+        logger.info(f"Invalidated {invalidated_count} cache entries")
+        
+        # 세션 데이터 삭제
         redis_client.delete(session_id)
         logger.debug("Redis session deleted:", redis_client.exists(session_id))
 
@@ -84,7 +91,7 @@ async def process_google_redirect(
         value=session_id,
         httponly=True,
         secure=False,
-        max_age=3600
+        max_age=86400  # 🔥 24시간으로 변경 (Redis TTL과 동일)
     )
     logger.debug("Cookie set in RedirectResponse directly")
     return response
